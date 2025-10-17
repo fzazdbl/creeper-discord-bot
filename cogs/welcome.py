@@ -4,7 +4,7 @@ from __future__ import annotations
 import discord
 from discord.ext import commands
 
-from utils import config, embeds
+from utils import config, embeds, logs as audit_logs
 
 
 class Welcome(commands.Cog):
@@ -13,30 +13,31 @@ class Welcome(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    async def _log(self, guild: discord.Guild, message: str) -> None:
-        """Envoie un message dans le salon de logs si présent."""
+    async def _assign_role(self, member: discord.Member) -> None:
+        """Assigne le rôle adapté au membre qui rejoint."""
 
-        log_channel = discord.utils.get(guild.text_channels, name=config.LOG_CHANNEL_NAME)
-        if log_channel is not None:
-            await log_channel.send(message)
+        guild = member.guild
+        role_name = config.BOT_ROLE_NAME if member.bot else config.DEFAULT_ROLE_NAME
+        role = discord.utils.get(guild.roles, name=role_name)
+        if role is None:
+            return
+        try:
+            await member.add_roles(role, reason="Arrivée d'un nouveau membre")
+        except discord.Forbidden:
+            await audit_logs.log_to_channel(guild, "⚠️ Impossible d'attribuer automatiquement le rôle.")
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
         """Souhaite la bienvenue et applique le rôle adapté."""
 
         guild = member.guild
-        if guild is None:
+        await self._assign_role(member)
+        await audit_logs.log_to_channel(guild, f"👋 {member.display_name} vient de rejoindre le serveur.")
+
+        if not config.are_welcome_messages_enabled():
             return
 
-        role_name = config.BOT_ROLE_NAME if member.bot else config.DEFAULT_ROLE_NAME
-        role = discord.utils.get(guild.roles, name=role_name)
-        if role is not None:
-            try:
-                await member.add_roles(role, reason="Arrivée d'un nouveau membre")
-            except discord.Forbidden:
-                await self._log(guild, "⚠️ Impossible d'attribuer automatiquement le rôle.")
-
-        welcome_channel = discord.utils.get(guild.text_channels, name=config.WELCOME_CHANNEL_NAME)
+        welcome_channel = discord.utils.get(guild.text_channels, name=config.get_welcome_channel_name())
         if welcome_channel is None:
             return
 
@@ -54,7 +55,13 @@ class Welcome(commands.Cog):
             description=welcome_message,
         )
         await welcome_channel.send(embed=welcome_embed)
-        await self._log(guild, f"👋 {member.display_name} vient de rejoindre le serveur.")
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member) -> None:
+        """Consigne le départ d'un membre."""
+
+        guild = member.guild
+        await audit_logs.log_to_channel(guild, f"👋 {member.display_name} a quitté le serveur.")
 
 
 async def setup(bot: commands.Bot) -> None:

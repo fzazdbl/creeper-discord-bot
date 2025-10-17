@@ -1,27 +1,29 @@
 """Module de configuration central du bot Creeper."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
+import json
+from pathlib import Path
 
 import discord
 
 BOT_NAME: str = "Creeper"
 """Nom public du bot."""
 
-WELCOME_CHANNEL_NAME: str = "📥-bienvenue"
-"""Nom du salon d'accueil destiné aux nouveaux membres."""
+DEFAULT_WELCOME_CHANNEL_NAME: str = "📥-bienvenue"
+"""Nom du salon d'accueil destiné aux nouveaux membres (valeur par défaut)."""
 
-LOG_CHANNEL_NAME: str = "📚-logs"
-"""Nom du salon texte recevant les journaux d'actions du bot."""
+DEFAULT_LOG_CHANNEL_NAME: str = "📚-logs"
+"""Nom du salon texte recevant les journaux d'actions du bot (valeur par défaut)."""
+
+DEFAULT_MUSIC_VOICE_CHANNEL_NAME: str = "🎶 Écouter de la musique (vocal)"
+"""Nom du salon vocal officiel dédié à l'écoute musicale (valeur par défaut)."""
 
 DEFAULT_ROLE_NAME: str = "🧱 Joueur"
 """Nom du rôle attribué par défaut aux nouveaux arrivants humains."""
 
 BOT_ROLE_NAME: str = "🤖 Bot"
 """Nom du rôle attribué automatiquement aux bots rejoignant le serveur."""
-
-MUSIC_VOICE_CHANNEL_NAME: str = "🎶 Écouter de la musique (vocal)"
-"""Nom du salon vocal officiel dédié à l'écoute musicale."""
 
 EMBED_COLOR_PRIMARY: discord.Colour = discord.Colour(0x57F287)
 """Couleur principale des embeds informatifs."""
@@ -42,60 +44,100 @@ SETUP_SUMMARY_HEADER: str = (
 )
 """Texte introductif récapitulatif de la commande /setup."""
 
-CATEGORIES: list[dict[str, object]] = [
-    {
-        "name": "💬 Discussions",
-        "channels": [
-            {"name": "💬-général", "type": "text"},
-            {"name": "🤔-questions", "type": "text"},
-            {"name": "📊-sondages", "type": "text"},
-        ],
-    },
-    {
-        "name": "📜 Annonces & Infos",
-        "channels": [
-            {"name": "📢-annonces", "type": "text"},
-            {"name": "📜-règlement", "type": "text"},
-            {"name": LOG_CHANNEL_NAME, "type": "text"},
-            {"name": WELCOME_CHANNEL_NAME, "type": "text"},
-        ],
-    },
-    {
-        "name": "🛠️ Support & Aide",
-        "channels": [
-            {"name": "🛠️-aide", "type": "text"},
-            {"name": "❓-faq", "type": "text"},
-        ],
-    },
-    {
-        "name": "🧱 Screenshots & Builds",
-        "channels": [
-            {"name": "🧱-screenshots", "type": "text"},
-            {"name": "🎨-créations", "type": "text"},
-        ],
-    },
-    {
-        "name": "🎮 Équipe & Builders",
-        "channels": [
-            {"name": "👥-équipe", "type": "text"},
-            {"name": "📌-projets", "type": "text"},
-        ],
-    },
-    {
-        "name": "🔊 Vocaux",
-        "channels": [
-            {"name": "🔊 Discussion", "type": "voice"},
-            {"name": "🗣️ Réunion", "type": "voice"},
-        ],
-    },
-    {
-        "name": "🎧 Musique",
-        "channels": [
-            {"name": MUSIC_VOICE_CHANNEL_NAME, "type": "voice"},
-        ],
-    },
-]
-"""Structure officielle des catégories et salons à créer via /setup."""
+MINECRAFT_SERVER_IP: str = "play.mc-bts-sio.fr"
+"""Adresse IP/hostname du serveur Minecraft."""
+
+MINECRAFT_SERVER_SEED: str = "8123476501298746501"
+"""Seed du monde Minecraft à afficher aux joueurs."""
+
+MINECRAFT_MEMES: tuple[str, ...] = (
+    "https://i.imgflip.com/4/46e43q.jpg",
+    "https://i.imgflip.com/1bij.jpg",
+    "https://i.imgflip.com/7o1y2f.jpg",
+    "https://i.imgflip.com/3i7p96.jpg",
+)
+"""Collection de mèmes Minecraft envoyés par la commande /meme."""
+
+_STATE_FILE = Path(__file__).with_name("config_state.json")
+
+
+@dataclass(slots=True)
+class ConfigState:
+    """Représente l'état de configuration personnalisable du bot."""
+
+    welcome_channel_name: str = DEFAULT_WELCOME_CHANNEL_NAME
+    log_channel_name: str = DEFAULT_LOG_CHANNEL_NAME
+    music_voice_channel_name: str = DEFAULT_MUSIC_VOICE_CHANNEL_NAME
+    welcome_messages_enabled: bool = True
+    role_colours: dict[str, int] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, object]) -> "ConfigState":
+        """Construit un état à partir d'un dictionnaire brut."""
+
+        role_colours_raw = payload.get("role_colours", {})
+        if not isinstance(role_colours_raw, dict):
+            role_colours_raw = {}
+        role_colours = {
+            str(name): int(value)
+            for name, value in role_colours_raw.items()
+            if isinstance(name, str) and isinstance(value, int)
+        }
+        return cls(
+            welcome_channel_name=str(
+                payload.get("welcome_channel_name", DEFAULT_WELCOME_CHANNEL_NAME)
+            ),
+            log_channel_name=str(payload.get("log_channel_name", DEFAULT_LOG_CHANNEL_NAME)),
+            music_voice_channel_name=str(
+                payload.get("music_voice_channel_name", DEFAULT_MUSIC_VOICE_CHANNEL_NAME)
+            ),
+            welcome_messages_enabled=bool(payload.get("welcome_messages_enabled", True)),
+            role_colours=role_colours,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        """Sérialise l'état pour une écriture dans un fichier JSON."""
+
+        return {
+            "welcome_channel_name": self.welcome_channel_name,
+            "log_channel_name": self.log_channel_name,
+            "music_voice_channel_name": self.music_voice_channel_name,
+            "welcome_messages_enabled": self.welcome_messages_enabled,
+            "role_colours": self.role_colours,
+        }
+
+
+def _load_state() -> ConfigState:
+    if not _STATE_FILE.exists():
+        return ConfigState()
+    try:
+        payload = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ConfigState()
+    return ConfigState.from_dict(payload)
+
+
+_STATE: ConfigState = _load_state()
+WELCOME_CHANNEL_NAME: str = _STATE.welcome_channel_name
+"""Nom du salon d'accueil actuellement configuré."""
+
+LOG_CHANNEL_NAME: str = _STATE.log_channel_name
+"""Nom du salon recevant les journaux actuellement configuré."""
+
+MUSIC_VOICE_CHANNEL_NAME: str = _STATE.music_voice_channel_name
+"""Nom du salon vocal musique actuellement configuré."""
+
+
+def _save_state() -> None:
+    """Sauvegarde l'état courant sur disque."""
+
+    try:
+        _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _STATE_FILE.write_text(json.dumps(_STATE.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        # L'échec d'écriture ne doit pas bloquer le bot ; une entrée sera loggée ailleurs.
+        pass
+
 
 @dataclass(slots=True)
 class RoleConfiguration:
@@ -108,7 +150,7 @@ class RoleConfiguration:
     hoist: bool
 
 
-ROLES: tuple[RoleConfiguration, ...] = (
+_DEFAULT_ROLES: tuple[RoleConfiguration, ...] = (
     RoleConfiguration(
         name="👑 Admin",
         permissions=discord.Permissions(administrator=True),
@@ -154,13 +196,161 @@ ROLES: tuple[RoleConfiguration, ...] = (
             speak=True,
             use_application_commands=True,
             manage_messages=True,
+            manage_channels=True,
         ),
         colour=discord.Colour.blurple(),
         mentionable=False,
         hoist=False,
     ),
 )
-"""Définition complète des rôles à créer avec leurs permissions."""
+"""Définition complète des rôles à créer avec leurs permissions par défaut."""
+
+
+def get_roles() -> tuple[RoleConfiguration, ...]:
+    """Retourne la configuration des rôles en prenant en compte les personnalisations."""
+
+    roles: list[RoleConfiguration] = []
+    for role_conf in _DEFAULT_ROLES:
+        override_colour = _STATE.role_colours.get(role_conf.name)
+        colour = discord.Colour(override_colour) if override_colour is not None else role_conf.colour
+        roles.append(
+            RoleConfiguration(
+                name=role_conf.name,
+                permissions=role_conf.permissions,
+                colour=colour,
+                mentionable=role_conf.mentionable,
+                hoist=role_conf.hoist,
+            )
+        )
+    return tuple(roles)
+
+
+def get_default_role_colour(role_name: str) -> discord.Colour:
+    """Retourne la couleur par défaut d'un rôle connu."""
+
+    for role_conf in _DEFAULT_ROLES:
+        if role_conf.name == role_name:
+            return role_conf.colour
+    return discord.Colour.default()
+
+
+def get_categories() -> list[dict[str, object]]:
+    """Structure officielle des catégories et salons à créer via /setup."""
+
+    return [
+        {
+            "name": "💬 Discussions",
+            "channels": [
+                {"name": "💬-général", "type": "text"},
+                {"name": "🤔-questions", "type": "text"},
+                {"name": "📊-sondages", "type": "text"},
+            ],
+        },
+        {
+            "name": "📜 Annonces & Infos",
+            "channels": [
+                {"name": "📢-annonces", "type": "text"},
+                {"name": "📜-règlement", "type": "text"},
+                {"name": get_log_channel_name(), "type": "text"},
+                {"name": get_welcome_channel_name(), "type": "text"},
+            ],
+        },
+        {
+            "name": "🛠️ Support & Aide",
+            "channels": [
+                {"name": "🛠️-aide", "type": "text"},
+                {"name": "❓-faq", "type": "text"},
+            ],
+        },
+        {
+            "name": "🧱 Screenshots & Builds",
+            "channels": [
+                {"name": "🧱-screenshots", "type": "text"},
+                {"name": "🎨-créations", "type": "text"},
+            ],
+        },
+        {
+            "name": "🎮 Équipe & Builders",
+            "channels": [
+                {"name": "👥-équipe", "type": "text"},
+                {"name": "📌-projets", "type": "text"},
+            ],
+        },
+        {
+            "name": "🔊 Vocaux",
+            "channels": [
+                {"name": "🔊 Discussion", "type": "voice"},
+                {"name": "🗣️ Réunion", "type": "voice"},
+            ],
+        },
+        {
+            "name": "🎧 Musique",
+            "channels": [
+                {"name": get_music_voice_channel_name(), "type": "voice"},
+            ],
+        },
+    ]
+
+
+def get_log_channel_name() -> str:
+    return LOG_CHANNEL_NAME
+
+
+def get_welcome_channel_name() -> str:
+    return WELCOME_CHANNEL_NAME
+
+
+def get_music_voice_channel_name() -> str:
+    return MUSIC_VOICE_CHANNEL_NAME
+
+
+def are_welcome_messages_enabled() -> bool:
+    return _STATE.welcome_messages_enabled
+
+
+def set_log_channel_name(name: str) -> None:
+    global LOG_CHANNEL_NAME, _STATE
+    _STATE = replace(_STATE, log_channel_name=name)
+    LOG_CHANNEL_NAME = name
+    _save_state()
+
+
+def set_welcome_channel_name(name: str) -> None:
+    global WELCOME_CHANNEL_NAME, _STATE
+    _STATE = replace(_STATE, welcome_channel_name=name)
+    WELCOME_CHANNEL_NAME = name
+    _save_state()
+
+
+def set_music_voice_channel_name(name: str) -> None:
+    global MUSIC_VOICE_CHANNEL_NAME, _STATE
+    _STATE = replace(_STATE, music_voice_channel_name=name)
+    MUSIC_VOICE_CHANNEL_NAME = name
+    _save_state()
+
+
+def set_welcome_messages(enabled: bool) -> None:
+    global _STATE
+    _STATE = replace(_STATE, welcome_messages_enabled=enabled)
+    _save_state()
+
+
+def set_role_colour(role_name: str, colour: discord.Colour | None) -> None:
+    """Définit (ou réinitialise) la couleur personnalisée d'un rôle."""
+
+    global _STATE
+    role_colours = dict(_STATE.role_colours)
+    if colour is None:
+        role_colours.pop(role_name, None)
+    else:
+        role_colours[role_name] = colour.value
+    _STATE = replace(_STATE, role_colours=role_colours)
+    _save_state()
+
+
+def get_role_colour_override(role_name: str) -> discord.Colour | None:
+    value = _STATE.role_colours.get(role_name)
+    return discord.Colour(value) if value is not None else None
 
 
 def humanize_duration(duration: int | None) -> str:

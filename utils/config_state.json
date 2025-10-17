@@ -1,0 +1,7 @@
+{
+  "welcome_channel_name": "📥-bienvenue",
+  "log_channel_name": "📚-logs",
+  "music_voice_channel_name": "🎶 Écouter de la musique (vocal)",
+  "welcome_messages_enabled": true,
+  "role_colours": {}
+}

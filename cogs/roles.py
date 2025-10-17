@@ -4,7 +4,7 @@ from __future__ import annotations
 import discord
 from discord.ext import commands
 
-from utils import config
+from utils import config, logs as audit_logs
 
 
 class Roles(commands.Cog):
@@ -16,15 +16,13 @@ class Roles(commands.Cog):
     async def _log(self, guild: discord.Guild, message: str) -> None:
         """Envoie le message spécifié dans le salon #logs si présent."""
 
-        log_channel = discord.utils.get(guild.text_channels, name=config.LOG_CHANNEL_NAME)
-        if log_channel:
-            await log_channel.send(message)
+        await audit_logs.log_to_channel(guild, message)
 
     async def synchronize_roles(self, guild: discord.Guild) -> list[str]:
         """Crée ou met à jour les rôles définis dans la configuration."""
 
         report: list[str] = []
-        for role_conf in config.ROLES:
+        for role_conf in config.get_roles():
             role = discord.utils.get(guild.roles, name=role_conf.name)
             if role is None:
                 role = await guild.create_role(
@@ -62,7 +60,7 @@ class Roles(commands.Cog):
 
         position_map: dict[discord.Role, int] = {}
         current_position = top_position
-        for role_conf in config.ROLES:
+        for role_conf in config.get_roles():
             role = discord.utils.get(guild.roles, name=role_conf.name)
             if role and role != guild.me.top_role:
                 position_map[role] = max(current_position, 1)

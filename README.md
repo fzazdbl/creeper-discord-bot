@@ -73,15 +73,15 @@ pip install -r requirements.txt
 
 ---
 ## 4. Installer FFmpeg
-**Windows :** télécharge-le depuis https://ffmpeg.org et ajoute le dossier bin à ta variable d’environnement PATH.
-**Linux/macOS :**
+- **Windows :** télécharge-le depuis https://ffmpeg.org et ajoute le dossier bin à ta variable d’environnement PATH.
+- **Linux/macOS :**
 ```bash
 sudo apt install ffmpeg
 ```
 
 ---
 ## 5. Créer un fichier .env
-Dans le dossier principal, crée un fichier nommé .env et ajoute ton token Discord :
+- Dans le dossier principal, crée un fichier nommé .env et ajoute ton token Discord :
 ```bash
 DISCORD_TOKEN=ton_token_ici
 ```
@@ -91,5 +91,29 @@ DISCORD_TOKEN=ton_token_ici
 python main.py
 ```
 
+---
 
+## 🪄 Utilisation
 
+- `/setup` → Configure automatiquement le serveur (salons, rôles, etc.)
+
+- `/play`, `/skip`, `/stop`, `/pause`, `/resume` → Gérer la musique 🎶
+
+- `/help` → Liste toutes les commandes disponibles
+
+---
+## 🛡️ Bonnes pratiques
+- Ne JAMAIS publier votre token Discord publiquement.
+
+- Ajoutez .env dans votre .gitignore :
+```bash
+.env
+__pycache__/
+*.pyc
+```
+
+---
+## 📜 Licence
+
+- Ce projet est sous licence MIT.
+- Vous êtes libres de l’utiliser, le modifier et le partager, tant que la licence d’origine est conservée.

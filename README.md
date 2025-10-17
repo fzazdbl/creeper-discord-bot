@@ -20,10 +20,13 @@ Ce projet est pensé pour une classe **BTS SIO** qui veut un serveur organisé, 
 - Support des **liens YouTube, playlists et recherches**  
 - Utilise `yt_dlp` + `FFmpeg` pour la lecture audio  
 
-📩 **Fonctions supplémentaires** :  
-- Message d’accueil personnalisé  
-- Commande `/help` pour voir toutes les commandes disponibles  
-- Salon `#📚-logs` pour suivre les actions importantes du bot  
+📩 **Fonctions supplémentaires** :
+- Message d’accueil personnalisé
+- Commande `/help` pour voir toutes les commandes disponibles
+- Salon `#📚-logs` pour suivre les actions importantes du bot
+- Commandes de modération `/ban`, `/kick`, `/mute`, `/unmute`, `/warn`
+- Filtrage automatique des insultes, anti-spam et blocage de liens suspects
+- Commandes `/status`, `/motd`, `/players` pour suivre le serveur Minecraft en direct
 
 ---
 

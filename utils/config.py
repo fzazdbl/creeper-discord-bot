@@ -25,6 +25,9 @@ DEFAULT_ROLE_NAME: str = "🧱 Joueur"
 BOT_ROLE_NAME: str = "🤖 Bot"
 """Nom du rôle attribué automatiquement aux bots rejoignant le serveur."""
 
+MUTED_ROLE_NAME: str = "🔇 Muted"
+"""Nom du rôle appliqué lors d'une mise en sourdine par modération."""
+
 EMBED_COLOR_PRIMARY: discord.Colour = discord.Colour(0x57F287)
 """Couleur principale des embeds informatifs."""
 
@@ -50,6 +53,9 @@ MINECRAFT_SERVER_IP: str = "play.mc-bts-sio.fr"
 MINECRAFT_SERVER_SEED: str = "8123476501298746501"
 """Seed du monde Minecraft à afficher aux joueurs."""
 
+MINECRAFT_SERVER_PORT: int = 25565
+"""Port TCP du serveur Minecraft (25565 par défaut)."""
+
 MINECRAFT_MEMES: tuple[str, ...] = (
     "https://i.imgflip.com/4/46e43q.jpg",
     "https://i.imgflip.com/1bij.jpg",
@@ -57,6 +63,29 @@ MINECRAFT_MEMES: tuple[str, ...] = (
     "https://i.imgflip.com/3i7p96.jpg",
 )
 """Collection de mèmes Minecraft envoyés par la commande /meme."""
+
+BANNED_WORDS: tuple[str, ...] = (
+    "con",
+    "connard",
+    "fdp",
+    "merde",
+    "salope",
+)
+"""Liste basique de mots grossiers à supprimer automatiquement."""
+
+BLOCKED_DOMAINS: tuple[str, ...] = (
+    "grabify",
+    "iplogger",
+    "gyazo.in",
+    "discordgift.site",
+)
+"""Domaines suspects entraînant la suppression automatique du message."""
+
+SPAM_MESSAGE_LIMIT: int = 5
+"""Nombre de messages autorisés par intervalle avant détection de spam."""
+
+SPAM_INTERVAL_SECONDS: int = 8
+"""Fenêtre de temps pour le contrôle anti-spam."""
 
 _STATE_FILE = Path(__file__).with_name("config_state.json")
 

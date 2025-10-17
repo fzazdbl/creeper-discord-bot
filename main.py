@@ -19,6 +19,7 @@ COGS = [
     "cogs.help",
     "cogs.logs",
     "cogs.admin",
+    "cogs.moderation",
     "cogs.minecraft",
 ]
 

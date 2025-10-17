@@ -17,6 +17,9 @@ COGS = [
     "cogs.music",
     "cogs.welcome",
     "cogs.help",
+    "cogs.logs",
+    "cogs.admin",
+    "cogs.minecraft",
 ]
 
 

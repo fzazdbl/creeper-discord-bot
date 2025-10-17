@@ -8,7 +8,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from utils import config, embeds, checks
+from utils import config, embeds, checks, logs as audit_logs
 
 
 class Setup(commands.Cog):
@@ -21,10 +21,19 @@ class Setup(commands.Cog):
         """Récupère ou crée une catégorie et signale si elle vient d'être créée."""
 
         category = discord.utils.get(guild.categories, name=name)
-        if category is None:
+        if category is not None:
+            return category, False
+        try:
             category = await guild.create_category(name=name, reason="Initialisation Creeper /setup")
-            return category, True
-        return category, False
+        except discord.Forbidden as error:
+            raise app_commands.AppCommandError(
+                f"Permissions insuffisantes pour créer la catégorie {name}."
+            ) from error
+        except discord.HTTPException as error:
+            raise app_commands.AppCommandError(
+                f"Impossible de créer la catégorie {name} (erreur Discord)."
+            ) from error
+        return category, True
 
     async def _ensure_channel(
         self,
@@ -36,35 +45,42 @@ class Setup(commands.Cog):
 
         channel_type = channel_conf["type"]
         channel_name = channel_conf["name"]
-        if channel_type == "text":
-            existing = discord.utils.get(category.text_channels, name=channel_name)
-            if existing:
-                return existing, False
-            channel = await guild.create_text_channel(
-                name=channel_name,
-                category=category,
-                reason="Initialisation Creeper /setup",
-                topic="Salon créé automatiquement par Creeper",
-            )
-            return channel, True
-        if channel_type == "voice":
-            existing_voice = discord.utils.get(category.voice_channels, name=channel_name)
-            if existing_voice:
-                return existing_voice, False
-            channel = await guild.create_voice_channel(
-                name=channel_name,
-                category=category,
-                reason="Initialisation Creeper /setup",
-            )
-            return channel, True
+        try:
+            if channel_type == "text":
+                existing = discord.utils.get(category.text_channels, name=channel_name)
+                if existing:
+                    return existing, False
+                channel = await guild.create_text_channel(
+                    name=channel_name,
+                    category=category,
+                    reason="Initialisation Creeper /setup",
+                    topic="Salon créé automatiquement par Creeper",
+                )
+                return channel, True
+            if channel_type == "voice":
+                existing_voice = discord.utils.get(category.voice_channels, name=channel_name)
+                if existing_voice:
+                    return existing_voice, False
+                channel = await guild.create_voice_channel(
+                    name=channel_name,
+                    category=category,
+                    reason="Initialisation Creeper /setup",
+                )
+                return channel, True
+        except discord.Forbidden as error:
+            raise app_commands.AppCommandError(
+                f"Permissions insuffisantes pour créer le salon {channel_name}."
+            ) from error
+        except discord.HTTPException as error:
+            raise app_commands.AppCommandError(
+                f"Impossible de créer le salon {channel_name} (erreur Discord)."
+            ) from error
         raise ValueError(f"Type de canal inconnu: {channel_type}")
 
     async def _log(self, guild: discord.Guild, message: str) -> None:
         """Envoie un message dans le salon des journaux s'il existe."""
 
-        log_channel = discord.utils.get(guild.text_channels, name=config.LOG_CHANNEL_NAME)
-        if log_channel is not None:
-            await log_channel.send(message)
+        await audit_logs.log_to_channel(guild, message)
 
     async def _provision_roles(self, guild: discord.Guild) -> list[str]:
         """Délègue la création des rôles au cog dédié s'il est chargé."""
@@ -92,14 +108,23 @@ class Setup(commands.Cog):
 
         created_categories: list[str] = []
         created_channels: list[str] = []
+        error_messages: list[str] = []
 
-        for category_conf in config.CATEGORIES:
-            category, created = await self._ensure_category(guild, category_conf["name"])  # type: ignore[index]
+        for category_conf in config.get_categories():
+            try:
+                category, created = await self._ensure_category(guild, category_conf["name"])  # type: ignore[index]
+            except app_commands.AppCommandError as error:
+                error_messages.append(str(error))
+                continue
             if created:
                 created_categories.append(f"📁 {category.name}")
             channels: Iterable[dict[str, str]] = category_conf["channels"]  # type: ignore[index]
             for channel_conf in channels:
-                channel, was_created = await self._ensure_channel(guild, category, channel_conf)
+                try:
+                    channel, was_created = await self._ensure_channel(guild, category, channel_conf)
+                except (app_commands.AppCommandError, ValueError) as error:
+                    error_messages.append(str(error))
+                    continue
                 if was_created:
                     icon = "#️⃣" if channel_conf["type"] == "text" else "🔊"
                     created_channels.append(f"{icon} {channel.name}")
@@ -119,6 +144,10 @@ class Setup(commands.Cog):
         if role_report:
             embed_description.append("**Rôles :**")
             embed_description.extend(f"• {item}" for item in role_report)
+            embed_description.append("")
+        if error_messages:
+            embed_description.append("**Problèmes rencontrés :**")
+            embed_description.extend(f"• {message}" for message in error_messages)
 
         summary_embed = embeds.success_embed(
             "Configuration terminée",
@@ -127,6 +156,13 @@ class Setup(commands.Cog):
 
         await interaction.followup.send(embed=summary_embed, ephemeral=True)
         await self._log(guild, f"✅ Configuration /setup exécutée par {interaction.user.mention}.")
+
+        bot_role = discord.utils.get(guild.roles, name=config.BOT_ROLE_NAME)
+        if bot_role and not bot_role.permissions.manage_channels:
+            await self._log(
+                guild,
+                "⚠️ Le rôle bot ne possède pas la permission 'Gérer les salons'. Pense à l'ajouter.",
+            )
 
     async def setup_hook(self) -> None:
         """Méthode appelée automatiquement par discord.py lors du chargement du cog."""
@@ -137,7 +173,7 @@ class Setup(commands.Cog):
         """Ajoute des messages d'accueil par défaut dans certains salons clés."""
 
         if isinstance(channel, discord.TextChannel):
-            if channel.name == config.WELCOME_CHANNEL_NAME:
+            if channel.name == config.get_welcome_channel_name() and config.are_welcome_messages_enabled():
                 await channel.send(
                     embed=embeds.build_embed(
                         title="👋 Bienvenue !",
@@ -148,7 +184,7 @@ class Setup(commands.Cog):
                         ),
                     )
                 )
-            elif channel.name == config.LOG_CHANNEL_NAME:
+            elif channel.name == config.get_log_channel_name():
                 await channel.send(
                     embed=embeds.build_embed(
                         title="📚 Journaux du bot",

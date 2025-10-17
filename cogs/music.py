@@ -11,7 +11,7 @@ from discord import app_commands
 from discord.ext import commands
 import yt_dlp
 
-from utils import config, embeds
+from utils import config, embeds, logs as audit_logs
 
 YTDL_OPTIONS = {
     "format": "bestaudio/best",
@@ -27,6 +27,11 @@ FFMPEG_OPTIONS = {
 
 
 ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
+
+
+def _has_manage_messages(interaction: discord.Interaction) -> bool:
+    permissions = getattr(interaction.user, "guild_permissions", None)
+    return bool(permissions and permissions.manage_messages)
 
 
 @dataclass(slots=True)
@@ -71,14 +76,23 @@ class Music(commands.Cog):
             self._states[guild.id] = state
         return state
 
+    async def _log(self, guild: discord.Guild, message: str) -> None:
+        await audit_logs.log_to_channel(guild, message)
+
     async def _search_tracks(self, query: str, requester: discord.abc.User) -> list[Track]:
         """Interroge YouTube via yt_dlp pour obtenir une ou plusieurs pistes."""
 
         loop = asyncio.get_running_loop()
         try:
             data = await loop.run_in_executor(None, lambda: ytdl.extract_info(query, download=False))
+        except yt_dlp.utils.DownloadError as error:  # type: ignore[attr-defined]
+            raise app_commands.AppCommandError(
+                "Impossible de contacter YouTube pour cette requête. Merci de réessayer plus tard."
+            ) from error
         except Exception as error:  # noqa: BLE001
-            raise app_commands.AppCommandError(f"Erreur lors de la récupération YouTube : {error}") from error
+            raise app_commands.AppCommandError(
+                "Une erreur inconnue est survenue lors de la récupération des informations YouTube."
+            ) from error
 
         entries = data.get("entries") if isinstance(data, dict) else None
         if entries:
@@ -113,12 +127,21 @@ class Music(commands.Cog):
         if voice_state is None or voice_state.channel is None:
             return None
 
-        if interaction.guild.voice_client:
-            if interaction.guild.voice_client.channel != voice_state.channel:
-                await interaction.guild.voice_client.move_to(voice_state.channel)
-            return interaction.guild.voice_client
+        try:
+            if interaction.guild.voice_client:
+                if interaction.guild.voice_client.channel != voice_state.channel:
+                    await interaction.guild.voice_client.move_to(voice_state.channel)
+                return interaction.guild.voice_client
 
-        return await voice_state.channel.connect()
+            return await voice_state.channel.connect()
+        except discord.Forbidden:
+            raise app_commands.AppCommandError(
+                "Je n'ai pas les permissions nécessaires pour rejoindre ce salon vocal."
+            ) from None
+        except discord.ClientException as error:
+            raise app_commands.AppCommandError(
+                "Impossible de rejoindre le salon vocal pour le moment."
+            ) from error
 
     async def _start_playback(self, guild: discord.Guild) -> None:
         """Démarre la lecture si aucune piste n'est en cours."""
@@ -131,6 +154,7 @@ class Music(commands.Cog):
         if not state.queue:
             state.now_playing = None
             await self._notify(state, guild, "✅ File d'attente terminée.")
+            await self._log(guild, "✅ La file de lecture est terminée.")
             return
 
         track = state.queue.popleft()
@@ -138,6 +162,7 @@ class Music(commands.Cog):
         stream_url = await self._ensure_stream_url(track)
         if stream_url is None:
             await self._notify(state, guild, f"⚠️ Impossible de lire {track.title}.")
+            await self._log(guild, f"⚠️ Lecture échouée pour {track.title} : URL introuvable.")
             await self._start_playback(guild)
             return
         audio_source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTIONS)
@@ -155,6 +180,10 @@ class Music(commands.Cog):
                 duration=config.humanize_duration(track.duration),
             ),
         )
+        await self._log(
+            guild,
+            f"🎶 Lecture démarrée : **{track.title}** demandée par {track.requester.mention}",
+        )
 
     def _after_song(self, guild_id: int, error: Exception | None) -> None:
         """Callback exécuté à la fin d'une piste pour lancer la suivante."""
@@ -171,6 +200,7 @@ class Music(commands.Cog):
         state = self._states.get(guild.id)
         if state:
             await self._notify(state, guild, f"⚠️ Erreur pendant la lecture : {error}")
+        await audit_logs.log_error(guild, "Erreur musicale", str(error))
         await self._resume_queue(guild_id)
 
     async def _resume_queue(self, guild_id: int) -> None:
@@ -188,13 +218,20 @@ class Music(commands.Cog):
     ) -> None:
         """Envoie un message dans le dernier salon texte utilisé ou dans les logs."""
 
-        channel = state.text_channel or discord.utils.get(guild.text_channels, name=config.LOG_CHANNEL_NAME)
+        channel: Optional[discord.TextChannel] = state.text_channel
+        if channel is None:
+            channel = discord.utils.get(guild.text_channels, name=config.get_log_channel_name())
         if channel is None:
             return
-        if embed:
-            await channel.send(embed=embed)
-        elif message:
-            await channel.send(message)
+        try:
+            if embed:
+                await channel.send(embed=embed)
+            elif message:
+                await channel.send(message)
+        except discord.Forbidden:
+            await self._log(guild, "⚠️ Impossible d'envoyer un message dans le salon de notification.")
+        except discord.HTTPException:
+            await self._log(guild, "⚠️ Envoi de message échoué (erreur Discord).")
 
     def _user_can_control(self, interaction: discord.Interaction) -> bool:
         """Vérifie que l'utilisateur partage le salon vocal du bot."""
@@ -206,9 +243,21 @@ class Music(commands.Cog):
         bot_channel = interaction.guild.voice_client.channel if interaction.guild.voice_client else None
         return user_channel is not None and bot_channel is not None and user_channel == bot_channel
 
+    def _check_control_permissions(self, interaction: discord.Interaction) -> bool:
+        if not _has_manage_messages(interaction):
+            return False
+        return self._user_can_control(interaction)
+
     @app_commands.command(name="play", description="Lit une musique ou une playlist YouTube.")
     async def play(self, interaction: discord.Interaction, recherche: str) -> None:
         """Ajoute la requête à la file d'attente et lance la lecture."""
+
+        if not recherche or not recherche.strip():
+            await interaction.response.send_message(
+                embed=embeds.warning_embed("Requête manquante", "Indique un lien ou un mot-clé pour /play."),
+                ephemeral=True,
+            )
+            return
 
         if interaction.guild is None:
             await interaction.response.send_message(
@@ -226,7 +275,12 @@ class Music(commands.Cog):
             return
 
         await interaction.response.defer()
-        voice_client = await self._connect(interaction)
+        try:
+            voice_client = await self._connect(interaction)
+        except app_commands.AppCommandError as error:
+            await interaction.followup.send(embed=embeds.warning_embed("Connexion impossible", str(error)), ephemeral=True)
+            return
+
         if voice_client is None:
             await interaction.followup.send(
                 embed=embeds.warning_embed("Connexion impossible", "Je n'ai pas réussi à rejoindre ton salon vocal."),
@@ -238,6 +292,7 @@ class Music(commands.Cog):
             tracks = await self._search_tracks(recherche, interaction.user)
         except app_commands.AppCommandError as error:
             await interaction.followup.send(embed=embeds.warning_embed("Erreur", str(error)), ephemeral=True)
+            await self._log(interaction.guild, f"⚠️ Recherche YouTube échouée : {error}")
             return
 
         if not tracks:
@@ -261,9 +316,14 @@ class Music(commands.Cog):
             description = f"**{tracks[0].title}** a été ajoutée à la file d'attente."
 
         await interaction.followup.send(embed=embeds.build_embed("🎵 File mise à jour", description))
+        await self._log(
+            interaction.guild,
+            f"➕ {interaction.user.mention} a ajouté {len(tracks)} piste(s) à la file de lecture.",
+        )
         await self._start_playback(interaction.guild)
 
     @app_commands.command(name="skip", description="Passe à la musique suivante.")
+    @app_commands.default_permissions(manage_messages=True)
     async def skip(self, interaction: discord.Interaction) -> None:
         """Passe immédiatement à la piste suivante."""
 
@@ -274,17 +334,22 @@ class Music(commands.Cog):
             )
             return
 
-        if not self._user_can_control(interaction):
+        if not self._check_control_permissions(interaction):
             await interaction.response.send_message(
-                embed=embeds.warning_embed("Accès refusé", "Tu dois être dans le même salon vocal que moi."),
+                embed=embeds.warning_embed(
+                    "Accès refusé",
+                    "Tu dois disposer de la permission 'Gérer les messages' et être dans mon salon vocal.",
+                ),
                 ephemeral=True,
             )
             return
 
         interaction.guild.voice_client.stop()
+        await self._log(interaction.guild, f"⏭️ Lecture avancée par {interaction.user.mention}.")
         await interaction.response.send_message("⏭️ Lecture avancée.", ephemeral=True)
 
     @app_commands.command(name="stop", description="Arrête la musique et vide la file d'attente.")
+    @app_commands.default_permissions(manage_messages=True)
     async def stop(self, interaction: discord.Interaction) -> None:
         """Arrête toute lecture et quitte le salon vocal."""
 
@@ -297,9 +362,12 @@ class Music(commands.Cog):
             )
             return
 
-        if not self._user_can_control(interaction):
+        if not self._check_control_permissions(interaction):
             await interaction.response.send_message(
-                embed=embeds.warning_embed("Accès refusé", "Tu dois être dans le même salon vocal que moi."),
+                embed=embeds.warning_embed(
+                    "Accès refusé",
+                    "Tu dois disposer de la permission 'Gérer les messages' et être dans mon salon vocal.",
+                ),
                 ephemeral=True,
             )
             return
@@ -308,11 +376,16 @@ class Music(commands.Cog):
         state.queue.clear()
         state.now_playing = None
         voice_client.stop()
-        await voice_client.disconnect()
+        try:
+            await voice_client.disconnect()
+        except discord.HTTPException:
+            await self._log(guild, "⚠️ Impossible de me déconnecter du salon vocal.")
         self._states.pop(guild.id, None)
+        await self._log(guild, f"🛑 Arrêt complet demandé par {interaction.user.mention}.")
         await interaction.response.send_message("🛑 Lecture interrompue et file vidée.", ephemeral=True)
 
     @app_commands.command(name="pause", description="Met la musique en pause.")
+    @app_commands.default_permissions(manage_messages=True)
     async def pause(self, interaction: discord.Interaction) -> None:
         """Met en pause la lecture actuelle."""
 
@@ -324,17 +397,22 @@ class Music(commands.Cog):
             )
             return
 
-        if not self._user_can_control(interaction):
+        if not self._check_control_permissions(interaction):
             await interaction.response.send_message(
-                embed=embeds.warning_embed("Accès refusé", "Tu dois être dans le même salon vocal que moi."),
+                embed=embeds.warning_embed(
+                    "Accès refusé",
+                    "Tu dois disposer de la permission 'Gérer les messages' et être dans mon salon vocal.",
+                ),
                 ephemeral=True,
             )
             return
 
         voice_client.pause()
+        await self._log(interaction.guild, f"⏸️ Lecture mise en pause par {interaction.user.mention}.")
         await interaction.response.send_message("⏸️ Lecture mise en pause.", ephemeral=True)
 
     @app_commands.command(name="resume", description="Relance la musique en pause.")
+    @app_commands.default_permissions(manage_messages=True)
     async def resume(self, interaction: discord.Interaction) -> None:
         """Relance la lecture après une pause."""
 
@@ -346,14 +424,18 @@ class Music(commands.Cog):
             )
             return
 
-        if not self._user_can_control(interaction):
+        if not self._check_control_permissions(interaction):
             await interaction.response.send_message(
-                embed=embeds.warning_embed("Accès refusé", "Tu dois être dans le même salon vocal que moi."),
+                embed=embeds.warning_embed(
+                    "Accès refusé",
+                    "Tu dois disposer de la permission 'Gérer les messages' et être dans mon salon vocal.",
+                ),
                 ephemeral=True,
             )
             return
 
         voice_client.resume()
+        await self._log(interaction.guild, f"▶️ Lecture relancée par {interaction.user.mention}.")
         await interaction.response.send_message("▶️ Lecture relancée.", ephemeral=True)
 
     async def _ensure_stream_url(self, track: Track) -> Optional[str]:
@@ -365,6 +447,8 @@ class Music(commands.Cog):
         loop = asyncio.get_running_loop()
         try:
             info = await loop.run_in_executor(None, lambda: ytdl.extract_info(track.webpage_url, download=False))
+        except yt_dlp.utils.DownloadError:  # type: ignore[attr-defined]
+            return None
         except Exception:  # noqa: BLE001
             return None
 
